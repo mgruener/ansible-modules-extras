@@ -453,7 +453,7 @@ class ACMEClient(object):
         self.account        = ACMEAccount(module)
         self.directory      = self.account.directory
         self.authorizations = self.account.get_authorizations()
-        self.changed        = False
+        self.changed        = self.account.changed
 
         if self.dest is not None:
             self.dest = os.path.expanduser(self.dest)
@@ -461,7 +461,8 @@ class ACMEClient(object):
         if not os.path.exists(self.csr):
             module.fail_json(msg="CSR %s not found" % (self.csr))
 
-        self._openssl_bin = module.get_bin_path('openssl', True)
+        self._openssl_bin   = module.get_bin_path('openssl', True)
+        self.domains        = self._get_csr_domains()
 
     def _get_csr_domains(self):
         '''
@@ -483,7 +484,7 @@ class ACMEClient(object):
 
     def _get_domain_auth(self,domain):
         '''
-        Get the status string of the authorization for the given domain.
+        Get the status string of the first authorization for the given domain.
         Return None if no active authorization for the given domain was found.
         '''
         if self.authorizations is None:
@@ -493,6 +494,26 @@ class ACMEClient(object):
             if (auth['identifier']['type'] == 'dns') and (auth['identifier']['value'] == domain):
                 return auth
         return None
+
+    def _add_or_update_auth(self,auth):
+        '''
+        Add or update the given authroization in the global authorizations list.
+        Return True if the auth was updated/added and False if no change was
+        necessary.
+        '''
+        for index,cur_auth in enumerate(self.authorizations):
+            if (cur_auth['uri'] == auth['uri']):
+                # does the auth parameter contain updated data?
+                if cmp(cur_auth,auth) != 0:
+                    # yes, update our current authorization list
+                    self.authorizations[index] = auth
+                    return True
+                else:
+                    return False
+        # this is a new authorization, add it to the list of current
+        # authorizations
+        self.authorizations.append(auth)
+        return True
 
     def _new_authz(self,domain):
         '''
@@ -521,7 +542,7 @@ class ACMEClient(object):
         a dict with the data for all proposed (and supported) challenges.
         '''
         auth = self._new_authz(domain)
-        self.authorizations.append(auth)
+        self._add_or_update_auth(auth)
 
         data = {}
         # no need to choose a specific challenge here as this module
@@ -581,28 +602,23 @@ class ACMEClient(object):
             if info['status'] != 200:
                 self.module.fail_json(msg="Error validating challenge: CODE: {0} RESULT: {1}".format(info['status'], result))
 
-        result = _simple_get(self.module,auth['uri'])
-
         status = ''
-        # draft-ietf-acme-acme-02
-        # "status (required, string): ...
-        # If this field is missing, then the default value is "pending"."
-        if 'status' not in result:
-            status = 'pending'
-        else:
-            status = result['status']
+
         while status not in ['valid','invalid','revoked']:
             result = _simple_get(self.module,auth['uri'])
+            result['uri'] = auth['uri']
+            if self._add_or_update_auth(result):
+                self.changed = True
+            # draft-ietf-acme-acme-02
+            # "status (required, string): ...
+            # If this field is missing, then the default value is "pending"."
             if 'status' not in result:
                 status = 'pending'
             else:
                 status = result['status']
             time.sleep(2)
 
-        if status == 'valid':
-            return True
-        else:
-            return False
+        return status == 'valid'
 
     def _new_cert(self):
         '''
@@ -637,12 +653,11 @@ class ACMEClient(object):
         the challenge details for the choosen challenge type.
         '''
         data = {}
-        domains = self._get_csr_domains()
-
-        for domain in domains:
+        for domain in self.domains:
             auth = self._get_domain_auth(domain)
             if auth is None:
                 data[domain] = self._start_authorization(domain)
+                self.changed = True
             elif (auth['status'] == 'pending') or ('status' not in auth):
                 # draft-ietf-acme-acme-02
                 # "status (required, string): ...
@@ -654,10 +669,16 @@ class ACMEClient(object):
     def get_certificate(self):
         '''
         Request a new certificate and write it to the destination file.
-        Only do this if a destination file was provided. No Return value.
+        Only do this if a destination file was provided and if all authorizations
+        for the domains of the csr are valid. No Return value.
         '''
         if self.dest is None:
             return
+
+        for domain in self.domains:
+            auth = self._get_domain_auth(domain)
+            if auth is None or ('status' not in auth) or (auth['status'] != 'valid'):
+                return
 
         cert = self._new_cert()
         if cert['cert'] is not None:
@@ -681,8 +702,8 @@ def main():
     client = ACMEClient(module)
     data = client.do_challenges()
     client.get_certificate()
-    module.exit_json(changed=client.changed,result={'authorizations': client.authorizations,
-                                          'challenge_data':data})
+    module.exit_json(changed=client.changed,authorizations=client.authorizations,
+                                          challenge_data=data)
 
 # import module snippets
 from ansible.module_utils.basic import *
