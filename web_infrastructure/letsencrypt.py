@@ -618,6 +618,19 @@ class ACMEClient(object):
                 status = result['status']
             time.sleep(2)
 
+        if status == 'invalid':
+            error_details = ''
+            # multiple challenges could have failed at this point, gather error
+            # details for all of them before failing
+            for challenge in result['challenges']:
+                if challenge['status'] == 'invalid':
+                    error_details += ' CHALLENGE: {0}'.format(challenge['type'])
+                    if 'error' in challenge:
+                        error_details += ' DETAILS: {0};'.format(challenge['error']['detail'])
+                    else:
+                        error_details += ';'
+            self.module.fail_json(msg="Authorization for {0} returned invalid: {1}".format(result['identifier']['value'],error_details))
+
         return status == 'valid'
 
     def _new_cert(self):
