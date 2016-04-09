@@ -21,6 +21,7 @@
 import binascii
 import copy
 import textwrap
+from datetime import datetime
 
 DOCUMENTATION = '''
 ---
@@ -94,16 +95,22 @@ options:
     required: false
     default: null
   dest:
-    description: The destination file for the certificate
-    required: false
+    description: The destination file for the certificate.
+    required: true
     alias: ['cert']
-    default: null
+  remaining_days:
+    description:
+      - "The number of days the certificate must have left being valid before it
+         will be renewed."
+    required: false
+    default: 10
 '''
 
 EXAMPLES = '''
 - letsencrypt:
     account_key: /etc/pki/cert/private/account.key
     csr: /etc/pki/cert/csr/sample.com.csr
+    dest: /etc/httpd/ssl/sample.com.crt
   register: sample_com_challenge
 
 # perform the necessary steps to fulfill the challenge
@@ -112,6 +119,7 @@ EXAMPLES = '''
 # - copy:
 #     dest: /var/www/html/{{ sample_com_http_challenge['challenge_data']['sample.com']['http-01']['resource'] }}
 #     content: "{{ sample_com_http_challenge['challenge_data']['sample.com']['http-01']['resource_value'] }}"
+#     when: sample_com_challenge|changed
 
 - letsencrypt:
     account_key: /etc/pki/cert/private/account.key
@@ -121,24 +129,27 @@ EXAMPLES = '''
 '''
 
 RETURN = '''
+cert_days:
+  description: the number of days the certificate remains valid.
+  returned: success
 challenge_data:
   description: per domain / challenge type challenge data
-  returned: success
+  returned: changed
   type: dictionary
   contains:
     resource:
       description: the challenge resource that must be created for validation
-      returned: success
+      returned: changed
       type: string
       sample: .well-known/acme-challenge/evaGxfADs6pSRb2LAv9IZf17Dt3juxGJ-PCt92wr-oA
     resource_value:
       description: the value the resource has to produce for the validation
-      returned: success
+      returned: changed
       type: string
       sample: IlirfxKKXA...17Dt3juxGJ-PCt92wr-oA
 authorizations:
   description: ACME authorization data.
-  returned: success
+  returned: changed
   type: list
   contains:
       authorization:
@@ -168,6 +179,28 @@ def _simple_get(module,url):
     if info['status'] >= 400:
         module.fail_json(msg="ACME request failed: CODE: {0} RESULT:{1}".format(info['status'],result))
     return result
+
+def _get_cert_days(module,cert_file):
+    '''
+    Return the days the certificate in cert_file remains valid and -1
+    if the file was not found.
+    '''
+    _cert_file = os.path.expanduser(cert_file)
+    if not os.path.exists(_cert_file):
+        return -1
+
+    openssl_bin = module.get_bin_path('openssl', True)
+    openssl_cert_cmd = [openssl_bin, "x509", "-in", _cert_file, "-noout", "-text"]
+    _, out, _ = module.run_command(openssl_cert_cmd,check_rc=True)
+    try:
+        not_after_str = re.search(r"\s+Not After\s*:\s+(.*)",out.decode('utf8')).group(1)
+        not_after = datetime.fromtimestamp(time.mktime(time.strptime(not_after_str,'%b %d %H:%M:%S %Y %Z')))
+    except AttributeError:
+        module.fail_json(msg="No 'Not after' date found in {0}".format(cert_file))
+    except ValueError:
+        module.fail_json(msg="Faild to parse 'Not after' date of {0}".format(cert_file))
+    now = datetime.utcnow()
+    return (not_after - now).days
 
 # function source: network/basics/uri.py
 def _write_file(module, dest, content):
@@ -459,14 +492,12 @@ class ACMEClient(object):
         self.module         = module
         self.challenge      = module.params['challenge']
         self.csr            = os.path.expanduser(module.params['csr'])
-        self.dest           = module.params['dest']
+        self.dest           = os.path.expanduser(module.params['dest'])
         self.account        = ACMEAccount(module)
         self.directory      = self.account.directory
         self.authorizations = self.account.get_authorizations()
+        self.cert_days      = -1
         self.changed        = self.account.changed
-
-        if self.dest is not None:
-            self.dest = os.path.expanduser(self.dest)
 
         if not os.path.exists(self.csr):
             module.fail_json(msg="CSR %s not found" % (self.csr))
@@ -491,6 +522,7 @@ class ACMEClient(object):
                 if san.startswith("DNS:"):
                     domains.add(san[4:])
         return domains
+
 
     def _get_domain_auth(self,domain):
         '''
@@ -678,6 +710,8 @@ class ACMEClient(object):
         data = {}
         for domain in self.domains:
             auth = self._get_domain_auth(domain)
+            # TODO: must return challenge data of current authorizations in
+            # addition to the challenge data of new authorizations
             if auth is None:
                 data[domain] = self._start_authorization(domain)
                 self.changed = True
@@ -707,6 +741,7 @@ class ACMEClient(object):
         if cert['cert'] is not None:
             pem_cert = self._der_to_pem(cert['cert'])
             if _write_file(self.module,self.dest,pem_cert):
+                self.cert_days = _get_cert_days(self.module,self.dest)
                 self.changed = True
 
 def main():
@@ -719,15 +754,20 @@ def main():
             challenge      = dict(required=False, default='http-01', choices=['http-01', 'dns-01', 'tls-sni-02'], type='str'),
             csr            = dict(required=True, aliases=['src'], type='str'),
             data           = dict(required=False, no_log=True, default=None, type='dict'),
-            dest           = dict(required=False, default=None, aliases=['cert'], type='str'),
+            dest           = dict(required=True, aliases=['cert'], type='str'),
+            remaining_days = dict(required=False, default=10, type='int'),
         ),
     )
 
-    client = ACMEClient(module)
-    data = client.do_challenges()
-    client.get_certificate()
-    module.exit_json(changed=client.changed,authorizations=client.authorizations,
-                                          challenge_data=data)
+    cert_days = _get_cert_days(module,module.params['dest'])
+    if cert_days < module['remaining_days']:
+        client = ACMEClient(module)
+        data = client.do_challenges()
+        client.get_certificate()
+        module.exit_json(changed=client.changed,authorizations=client.authorizations,
+                                              challenge_data=data,cert_days=client.cert_days)
+    else:
+        module.exit_json(changed=False,cert_days=cert_days)
 
 # import module snippets
 from ansible.module_utils.basic import *
