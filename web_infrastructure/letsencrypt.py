@@ -38,11 +38,14 @@ description:
    - "Between these two tasks you have to fulfill the required steps for the
       choosen challenge by whatever means necessary. For http-01 that means
       creating the necessary challenge file on the destination webserver. For
-      dns-01 the necessary dns record has to be created. It is I(not) the
-      responsibility of this module to perform these steps. tls-sni-02 requires
-      you to create a SSL certificate with the appropriate subjectAlternativeNames."
+      dns-01 the necessary dns record has to be created. tls-sni-02 requires
+      you to create a SSL certificate with the appropriate subjectAlternativeNames.
+      It is I(not) the responsibility of this module to perform these steps."
    - "For details on how to fulfill these challenges, you might have to read through
       U(https://tools.ietf.org/html/draft-ietf-acme-acme-02#section-7)"
+   - "Although the defaults are choosen so that the module can be used with
+      the Let's Encrypt CA, the module can be used with any service using the ACME
+      protocol."
 options:
   account_key:
     description:
@@ -63,6 +66,12 @@ options:
          This will create technically correct, but untrusted certifiactes."
     required: false
     default: https://acme-staging.api.letsencrypt.org/directory
+  agreement:
+    description:
+      - "URI to a terms of service document you agree to when using the
+         ACME service at C(acme_directory)."
+    required: false
+    default: 'https://letsencrypt.org/documents/LE-SA-v1.0.1-July-27-2015.pdf'
   challenge:
     description: The challenge to be performed.
     required: false
@@ -242,6 +251,7 @@ class ACMEAccount(object):
     '''
     def __init__(self,module):
         self.module         = module
+        self.agreement      = module.params['agreement']
         self.key            = os.path.expanduser(module.params['account_key'])
         self.email          = module.params['account_email']
         self.data           = module.params['data']
@@ -347,7 +357,7 @@ class ACMEAccount(object):
 
         new_reg = {
             'resource': 'new-reg',
-            'agreement': 'https://letsencrypt.org/documents/LE-SA-v1.0.1-July-27-2015.pdf',
+            'agreement': self.agreement,
             'contact': contact
         }
 
@@ -705,6 +715,7 @@ def main():
             account_key    = dict(required=True, type='str'),
             account_email  = dict(required=False, default=None, type='str'),
             acme_directory = dict(required=False, default='https://acme-staging.api.letsencrypt.org/directory', type='str'),
+            agreement      = dict(required=False, default='https://letsencrypt.org/documents/LE-SA-v1.0.1-July-27-2015.pdf', type='str'),
             challenge      = dict(required=False, default='http-01', choices=['http-01', 'dns-01', 'tls-sni-02'], type='str'),
             csr            = dict(required=True, aliases=['src'], type='str'),
             data           = dict(required=False, no_log=True, default=None, type='dict'),
