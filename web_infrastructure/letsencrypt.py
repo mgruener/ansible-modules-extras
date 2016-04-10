@@ -194,12 +194,12 @@ def _get_cert_days(module,cert_file):
     _, out, _ = module.run_command(openssl_cert_cmd,check_rc=True)
     try:
         not_after_str = re.search(r"\s+Not After\s*:\s+(.*)",out.decode('utf8')).group(1)
-        not_after = datetime.fromtimestamp(time.mktime(time.strptime(not_after_str,'%b %d %H:%M:%S %Y %Z')))
+        not_after = datetime.datetime.fromtimestamp(time.mktime(time.strptime(not_after_str,'%b %d %H:%M:%S %Y %Z')))
     except AttributeError:
         module.fail_json(msg="No 'Not after' date found in {0}".format(cert_file))
     except ValueError:
         module.fail_json(msg="Faild to parse 'Not after' date of {0}".format(cert_file))
-    now = datetime.utcnow()
+    now = datetime.datetime.utcnow()
     return (not_after - now).days
 
 # function source: network/basics/uri.py
@@ -418,11 +418,6 @@ class ACMEAccount(object):
         update the contact information.
         https://tools.ietf.org/html/draft-ietf-acme-acme-02#section-6.3
         '''
-        # assume no change is necessary
-        # better err on the side of caution and avoid creating a
-        # new account in check mode by accident
-        if self.module.check_mode:
-            return
 
         contact = []
         if self.email:
@@ -757,15 +752,25 @@ def main():
             dest           = dict(required=True, aliases=['cert'], type='str'),
             remaining_days = dict(required=False, default=10, type='int'),
         ),
+        supports_check_mode = True,
     )
 
     cert_days = _get_cert_days(module,module.params['dest'])
-    if cert_days < module['remaining_days']:
-        client = ACMEClient(module)
-        data = client.do_challenges()
-        client.get_certificate()
-        module.exit_json(changed=client.changed,authorizations=client.authorizations,
-                                              challenge_data=data,cert_days=client.cert_days)
+    if cert_days < module.params['remaining_days']:
+        # If checkmode is active, base the changed state solely on the status
+        # of the certificate file as all other actions (accessing an account, checking
+        # the authorization status...) would lead to potential changes of the current
+        # state
+        if module.check_mode:
+            module.exit_json(changed=True,authorizations={},
+                                          challenge_data={},cert_days=cert_days)
+        else:
+            client = ACMEClient(module)
+            client.cert_days = cert_days
+            data = client.do_challenges()
+            client.get_certificate()
+            module.exit_json(changed=client.changed,authorizations=client.authorizations,
+                                                  challenge_data=data,cert_days=client.cert_days)
     else:
         module.exit_json(changed=False,cert_days=cert_days)
 
