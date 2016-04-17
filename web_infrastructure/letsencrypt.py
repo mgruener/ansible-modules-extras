@@ -158,10 +158,10 @@ authorizations:
         type: dict
 '''
 
-def _b64(data):
+def nopad_b64(data):
     return base64.urlsafe_b64encode(data).decode('utf8').replace("=", "")
 
-def _simple_get(module,url):
+def simple_get(module,url):
     resp, info = fetch_url(module, url, method='GET')
 
     result = None
@@ -180,7 +180,7 @@ def _simple_get(module,url):
         module.fail_json(msg="ACME request failed: CODE: {0} RESULT:{1}".format(info['status'],result))
     return result
 
-def _get_cert_days(module,cert_file):
+def get_cert_days(module,cert_file):
     '''
     Return the days the certificate in cert_file remains valid and -1
     if the file was not found.
@@ -203,7 +203,7 @@ def _get_cert_days(module,cert_file):
     return (not_after - now).days
 
 # function source: network/basics/uri.py
-def _write_file(module, dest, content):
+def write_file(module, dest, content):
     '''
     Write content to destination file dest, only if the content
     has changed.
@@ -264,7 +264,7 @@ class ACMEDirectory(object):
         self.module    = module
         self.directory_root = module.params['acme_directory']
 
-        self.directory = _simple_get(self.module,self.directory_root)
+        self.directory = simple_get(self.module,self.directory_root)
 
     def __getitem__(self, key): return self.directory[key]
 
@@ -305,9 +305,9 @@ class ACMEAccount(object):
         self.jws_header =  {
             "alg": "RS256",
             "jwk": {
-                "e": _b64(binascii.unhexlify(pub_exp.encode("utf-8"))),
+                "e": nopad_b64(binascii.unhexlify(pub_exp.encode("utf-8"))),
                 "kty": "RSA",
-                "n": _b64(binascii.unhexlify(re.sub(r"(\s|:)", "", pub_hex).encode("utf-8"))),
+                "n": nopad_b64(binascii.unhexlify(re.sub(r"(\s|:)", "", pub_hex).encode("utf-8"))),
             },
         }
         self.init_account()
@@ -318,7 +318,7 @@ class ACMEAccount(object):
         https://tools.ietf.org/html/draft-ietf-acme-acme-02#section-7.1
         '''
         accountkey_json = json.dumps(self.jws_header['jwk'], sort_keys=True, separators=(',', ':'))
-        thumbprint = _b64(hashlib.sha256(accountkey_json.encode('utf8')).digest())
+        thumbprint = nopad_b64(hashlib.sha256(accountkey_json.encode('utf8')).digest())
         return "{0}.{1}".format(token, thumbprint)
 
     def _parse_account_key(self,key):
@@ -348,8 +348,8 @@ class ACMEAccount(object):
         protected["nonce"] = self.directory.get_nonce()
 
         try:
-            payload64 = _b64(self.module.jsonify(payload).encode('utf8'))
-            protected64 = _b64(self.module.jsonify(protected).encode('utf8'))
+            payload64 = nopad_b64(self.module.jsonify(payload).encode('utf8'))
+            protected64 = nopad_b64(self.module.jsonify(protected).encode('utf8'))
         except Exception, e:
             self.module.fail_json(msg="Failed to encode payload / headers as JSON: {0}".format(e))
 
@@ -361,7 +361,7 @@ class ACMEAccount(object):
             "header": self.jws_header,
             "protected": protected64,
             "payload": payload64,
-            "signature": _b64(out),
+            "signature": nopad_b64(out),
         })
 
         resp, info = fetch_url(self.module, url, data=data, method='POST')
@@ -468,11 +468,11 @@ class ACMEAccount(object):
                 return []
         else:
             # TODO: need to handle pagination
-            authz_list = _simple_get(self.module, self._authz_list_uri)
+            authz_list = simple_get(self.module, self._authz_list_uri)
 
         authz = []
         for auth_uri in authz_list['authorizations']:
-            auth = _simple_get(self.module,auth_uri)
+            auth = simple_get(self.module,auth_uri)
             auth['uri'] = auth_uri
             authz.append(auth)
 
@@ -610,7 +610,7 @@ class ACMEClient(object):
             elif type == 'dns-01':
                 # https://tools.ietf.org/html/draft-ietf-acme-acme-02#section-7.4
                 resource = '_acme-challenge'
-                value = _b64(hashlib.sha256(keyauthorization).digest()).encode('utf8')
+                value = nopad_b64(hashlib.sha256(keyauthorization).digest()).encode('utf8')
             else:
                 continue
 
@@ -641,7 +641,7 @@ class ACMEClient(object):
         status = ''
 
         while status not in ['valid','invalid','revoked']:
-            result = _simple_get(self.module,auth['uri'])
+            result = simple_get(self.module,auth['uri'])
             result['uri'] = auth['uri']
             if self._add_or_update_auth(result):
                 self.changed = True
@@ -680,7 +680,7 @@ class ACMEClient(object):
 
         new_cert = {
             "resource": "new-cert",
-            "csr": _b64(out),
+            "csr": nopad_b64(out),
         }
         result, info = self.account.send_signed_request(self.directory['new-cert'], new_cert)
         if info['status'] not in [200,201]:
@@ -738,8 +738,8 @@ class ACMEClient(object):
         cert = self._new_cert()
         if cert['cert'] is not None:
             pem_cert = self._der_to_pem(cert['cert'])
-            if _write_file(self.module,self.dest,pem_cert):
-                self.cert_days = _get_cert_days(self.module,self.dest)
+            if write_file(self.module,self.dest,pem_cert):
+                self.cert_days = get_cert_days(self.module,self.dest)
                 self.changed = True
 
 def main():
@@ -758,7 +758,7 @@ def main():
         supports_check_mode = True,
     )
 
-    cert_days = _get_cert_days(module,module.params['dest'])
+    cert_days = get_cert_days(module,module.params['dest'])
     if cert_days < module.params['remaining_days']:
         # If checkmode is active, base the changed state solely on the status
         # of the certificate file as all other actions (accessing an account, checking
