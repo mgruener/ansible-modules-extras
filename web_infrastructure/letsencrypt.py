@@ -272,8 +272,9 @@ class ACMEDirectory(object):
         url = self.directory_root
         if resource is not None:
             url = resource
-        # TODO: error handling
         _, info = fetch_url(self.module, url, method='HEAD')
+        if info['status'] != 200:
+            self.module.fail_json(msg="Failed to get replay-nonce, got status {0}".format(info['status']))
         return info['replay-nonce']
 
 class ACMEAccount(object):
