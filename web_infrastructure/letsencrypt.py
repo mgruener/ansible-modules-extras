@@ -574,13 +574,11 @@ class ACMEClient(object):
             result['uri'] = info['location']
             return result
 
-    def _start_authorization(self,domain):
+    def _get_challenge_data(self,auth):
         '''
-        Starts a new authorization for the provided domain. Returns
-        a dict with the data for all proposed (and supported) challenges.
+        Returns a dict with the data for all proposed (and supported) challenges
+        of the given authorization.
         '''
-        auth = self._new_authz(domain)
-        self._add_or_update_auth(auth)
 
         data = {}
         # no need to choose a specific challenge here as this module
@@ -706,16 +704,20 @@ class ACMEClient(object):
         data = {}
         for domain in self.domains:
             auth = self._get_domain_auth(domain)
-            # TODO: must return challenge data of current authorizations in
-            # addition to the challenge data of new authorizations
             if auth is None:
-                data[domain] = self._start_authorization(domain)
+                new_auth = self._new_authz(domain)
+                self._add_or_update_auth(new_auth)
+                data[domain] = self._get_challenge_data(new_auth)
                 self.changed = True
             elif (auth['status'] == 'pending') or ('status' not in auth):
                 # draft-ietf-acme-acme-02
                 # "status (required, string): ...
                 # If this field is missing, then the default value is "pending"."
                 self._validate_challenges(auth)
+                # _validate_challenges updates the global authrozation dict,
+                # so get the current version of the authorization we are working
+                # on to retrieve the challenge data
+                data[domain] = self._get_challenge_data(self._get_domain_auth(domain))
 
         return data
 
