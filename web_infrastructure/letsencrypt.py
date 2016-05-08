@@ -27,7 +27,7 @@ DOCUMENTATION = '''
 ---
 module: letsencrypt
 author: "Michael Gruener (@mgruener)"
-version_added: "2.1"
+version_added: "2.2"
 short_description: Create SSL certificates with Let's Encrypt
 description:
    - "Create and renew SSL certificates with Let's Encrypt. Let’s Encrypt is a
