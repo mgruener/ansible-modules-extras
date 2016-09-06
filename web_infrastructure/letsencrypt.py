@@ -645,7 +645,7 @@ class ACMEClient(object):
                 "keyAuthorization": keyauthorization,
             }
             result, info = self.account.send_signed_request(uri, challenge_response)
-            if info['status'] != 200:
+            if info['status'] not in [200,202]:
                 self.module.fail_json(msg="Error validating challenge: CODE: {0} RESULT: {1}".format(info['status'], result))
 
         status = ''
